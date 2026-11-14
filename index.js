@@ -186,7 +186,18 @@ app.get('/', (req, res) => {
         .btn-dj { background: #333; color: #fff; border: 1px solid #555; }
         code { background: #000; padding: 4px 8px; border-radius: 4px; color: #1db954; }
       </style>
-<script src="https://jsdelivr.net"></script>
+      
+      <script src="https://cloudflare.com" onerror="this.onerror=null;this.src='https://jsdelivr.net';"></script>
+      <script>
+        window.addEventListener('load', () => {
+          if (typeof lamejs === 'undefined') {
+            const s = document.createElement('script');
+            s.src = 'https://unpkg.com';
+            document.head.appendChild(s);
+          }
+        });
+      </script>
+
       
     </head>
     <body>

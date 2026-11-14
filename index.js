@@ -9,7 +9,7 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 45 
 const PORT = process.env.PORT || 3000;
 
 // === SUAS CONFIGURAÇÕES ===
-const SENHA_DJ = "1234"; // <--- TROQUE SUA SENHA AQUI
+const SENHA_DJ = "imvu123"; // <--- TROQUE SUA SENHA AQUI
 const GITHUB_USER = "Plutaoperafk"; // Seu usuário do GitHub
 const GITHUB_REPO = "radio-imvu";   // Nome do seu repositório
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN || ""; // Pega automaticamente do Render Environment
@@ -127,8 +127,9 @@ async function buscarFontesOnline(termo) {
       const songs = saavnJson?.data?.results || [];
       songs.forEach(track => {
         const links = track.downloadUrl || [];
-        const audioUrl = links[links.length - 1]?.url || links?.url;
-        const artista = track.artists?.primary?.?.name || 'Artista';
+        const audioUrl = links[links.length - 1]?.url || links[0]?.url;
+        const artista = track.artists?.primary?.[0]?.name || 'Artista';
+
         if (audioUrl) {
           resultados.push({
             tipo: 'mp3',

@@ -119,54 +119,48 @@ function tocarProxima() {
 async function buscarFontesOnline(termo) {
   let resultados = [];
 
-  // 1. Rádios temáticas no Radio Browser (nunca bloqueia)
+  // 1. Busca estações de rádio temáticas (Radio Browser)
   try {
-    const radioRes = await fetch(`https://radio-browser.info{encodeURIComponent(termo)}&limit=5&hidebroken=true`, {
-      headers: { 'User-Agent': 'RadioIMVU/1.0' }
-    });
+    const urlRadio = 'https://radio-browser.info' + encodeURIComponent(termo) + '?limit=6&hidebroken=true';
+    const radioRes = await fetch(urlRadio, { headers: { 'User-Agent': 'RadioIMVU/1.0' } });
     if (radioRes.ok) {
       const stations = await radioRes.json();
       const radios = (stations || []).filter(s => s.url_resolved).map(s => ({
         tipo: 'radio',
-        titulo: `📻 Rádio: ${s.name.trim()}`,
+        titulo: '📻 Rádio: ' + s.name.trim(),
         streamUrl: s.url_resolved
       }));
       resultados = resultados.concat(radios);
     }
   } catch (e) {}
 
-  // 2. Arquivos MP3 diretos no Internet Archive
+  // 2. Busca arquivos MP3 diretos no Internet Archive
   try {
-    const archRes = await fetch(`https://archive.org:(${encodeURIComponent(termo)})+AND+mediatype:(audio)&fl[]=identifier,title&rows=4&output=json`);
+    const urlArch = 'https://archive.org' + encodeURIComponent(termo) + '+AND+mediatype:audio+AND+format:MP3&fl[]=identifier,title&rows=6&output=json';
+    const archRes = await fetch(urlArch);
     if (archRes.ok) {
       const archJson = await archRes.json();
       const docs = archJson?.response?.docs || [];
-      for (const doc of docs) {
-        const metaRes = await fetch(`https://archive.org{doc.identifier}/files`);
-        if (metaRes.ok) {
-          const metaJson = await metaRes.json();
-          const mp3 = (metaJson.result || []).find(f => f.name && f.name.toLowerCase().endsWith('.mp3'));
-          if (mp3) {
-            resultados.push({
-              tipo: 'mp3',
-              titulo: `🎵 MP3: ${doc.title || doc.identifier}`,
-              streamUrl: `https://archive.org{doc.identifier}/${encodeURIComponent(mp3.name)}`
-            });
-          }
-        }
-      }
+      docs.forEach(doc => {
+        resultados.push({
+          tipo: 'mp3',
+          titulo: '🎵 Archive MP3: ' + (doc.title || doc.identifier),
+          streamUrl: 'https://archive.org' + doc.identifier + '/' + doc.identifier + '.mp3'
+        });
+      });
     }
   } catch (e) {}
 
-  // 3. Faixas na API Oficial da Audius
+  // 3. Busca faixas na API Apple/iTunes
   try {
-    const searchRes = await fetch(`https://audius.co{encodeURIComponent(termo)}&app_name=RadioIMVU`);
-    if (searchRes.ok) {
-      const searchJson = await searchRes.json();
-      const tracks = (searchJson.data || []).slice(0, 5).map(track => ({
+    const urlItunes = 'https://apple.com' + encodeURIComponent(termo) + '&media=music&limit=6';
+    const itunesRes = await fetch(urlItunes);
+    if (itunesRes.ok) {
+      const itunesJson = await itunesRes.json();
+      const tracks = (itunesJson.results || []).filter(t => t.previewUrl).map(t => ({
         tipo: 'mp3',
-        titulo: `🎧 Audius: ${track.user?.name || 'Artista'} - ${track.title}`,
-        streamUrl: `https://audius.co{track.id}/stream?app_name=RadioIMVU`
+        titulo: '🎧 Prévia Oficial: ' + t.artistName + ' - ' + t.trackName,
+        streamUrl: t.previewUrl
       }));
       resultados = resultados.concat(tracks);
     }
@@ -174,6 +168,7 @@ async function buscarFontesOnline(termo) {
 
   return resultados;
 }
+
 
 app.get('/', (req, res) => {
   res.send(`
@@ -284,6 +279,16 @@ app.get('/dj', (req, res) => {
           <div>⏱ <strong>Tempo Online:</strong> <span id="st-up">Carregando...</span></div>
         </div>
       </div>
+            <div class="box" style="border-color: #1db954;">
+        <h3>💡 Dicas: Onde achar Links Diretos que funcionam aqui</h3>
+        <ul style="font-size: 13px; color: #ccc; line-height: 1.6;">
+          <li style="display:block;"><strong>1. Rádios 24h (Stream):</strong> Acesse <a href="https://radio-browser.info" target="_blank" style="color:#1db954">radio-browser.info</a>, busque qualquer estilo ou banda (ex: Linkin Park, Metal, Phonk) e copie a URL do stream.</li>
+          <li style="display:block;"><strong>2. Músicas MP3 Grátis:</strong> Acesse <a href="https://archive.org" target="_blank" style="color:#1db954">archive.org</a>, abra uma música, clique em <b>VBR MP3</b> à direita, clique com botão direito na faixa e escolha <b>"Copiar endereço do link"</b>.</li>
+          <li style="display:block;"><strong>3. Seus próprios MP3 sem gastar GitHub:</strong> Suba qualquer arquivo <code>.mp3</code> grátis em <a href="https://catbox.moe" target="_blank" style="color:#1db954">catbox.moe</a> e ele gera um link direto <code>https://catbox.moe</code> na hora.</li>
+          <li style="display:block;"><strong>4. Dropbox:</strong> Copie o link do seu MP3 no Dropbox e troque o final <code>?dl=0</code> por <code>?raw=1</code>.</li>
+        </ul>
+      </div>
+
 
       <div class="box" id="box-login">
         <label><strong>🔐 Senha do DJ:</strong></label>

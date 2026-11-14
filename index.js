@@ -119,31 +119,57 @@ function tocarProxima() {
 async function buscarAudius(termo) {
   let resultados = [];
 
-  // 1. Busca faixas na API Oficial da Audius
+  // 1. Busca estações de rádio temáticas no Radio Browser
   try {
-    const searchRes = await fetch(`https://audius.co{encodeURIComponent(termo)}&app_name=RadioIMVU`);
-    if (searchRes.ok) {
-      const searchJson = await searchRes.json();
-      const tracks = (searchJson.data || []).slice(0, 6).map(track => ({
-        titulo: `🎵 ${track.user?.name || 'Artista'} - ${track.title}`,
-        streamUrl: `https://audius.co{track.id}/stream?app_name=RadioIMVU`
-      }));
-      resultados = resultados.concat(tracks);
-    }
-  } catch (e) {}
-
-  // 2. Busca estações de rádio temáticas no Radio Browser (nunca bloqueia)
-  try {
-    const radioRes = await fetch(`https://radio-browser.info{encodeURIComponent(termo)}&limit=6&hidebroken=true`, {
+    const radioRes = await fetch(`https://radio-browser.info{encodeURIComponent(termo)}&limit=5&hidebroken=true`, {
       headers: { 'User-Agent': 'RadioIMVU/1.0' }
     });
     if (radioRes.ok) {
       const stations = await radioRes.json();
       const radios = (stations || []).filter(s => s.url_resolved).map(s => ({
+        tipo: 'radio',
         titulo: `📻 Rádio: ${s.name.trim()} (${s.countrycode || 'Web'})`,
         streamUrl: s.url_resolved
       }));
       resultados = resultados.concat(radios);
+    }
+  } catch (e) {}
+
+  // 2. Busca arquivos MP3 diretos no Internet Archive
+  try {
+    const iaQuery = encodeURIComponent(`${termo} AND mediatype:audio`);
+    const iaRes = await fetch(`https://archive.org{iaQuery}&fl[]=identifier,title&rows=5&output=json`);
+    if (iaRes.ok) {
+      const iaJson = await iaRes.json();
+      const docs = iaJson?.response?.docs || [];
+      for (const doc of docs) {
+        const metaRes = await fetch(`https://archive.org{doc.identifier}/files`);
+        if (metaRes.ok) {
+          const metaJson = await metaRes.json();
+          const mp3 = (metaJson.result || []).find(f => f.name && f.name.toLowerCase().endsWith('.mp3'));
+          if (mp3) {
+            resultados.push({
+              tipo: 'mp3',
+              titulo: `🎵 MP3: ${doc.title || mp3.name}`,
+              streamUrl: `https://archive.org{doc.identifier}/${encodeURIComponent(mp3.name)}`
+            });
+          }
+        }
+      }
+    }
+  } catch (e) {}
+
+  // 3. Busca faixas na API Oficial da Audius
+  try {
+    const searchRes = await fetch(`https://audius.co{encodeURIComponent(termo)}&app_name=RadioIMVU`);
+    if (searchRes.ok) {
+      const searchJson = await searchRes.json();
+      const tracks = (searchJson.data || []).slice(0, 4).map(track => ({
+        tipo: 'mp3',
+        titulo: `🎧 Audius: ${track.user?.name || 'Artista'} - ${track.title}`,
+        streamUrl: `https://audius.co{track.id}/stream?app_name=RadioIMVU`
+      }));
+      resultados = resultados.concat(tracks);
     }
   } catch (e) {}
 
@@ -258,22 +284,207 @@ app.get('/dj', (req, res) => {
     <body>
       <h2>🎧 Painel DJ - Rádio IMVU</h2>
 
-      <div class="box">
-        <div style="display:flex; justify-content:space-between; align-items:center;">
-          <div>Status da Rádio: <span id="st-badge" class="badge-on">ON</span></div>
-          <div>
-            <button onclick="comando('ligar')">⚡ Ligar</button>
-            <button class="off" onclick="comando('desligar')">⏹ Desligar</button>
-          </div>
-        </div>
-        <p style="margin: 10px 0 5px 0;"><strong>Tocando:</strong> <span id="st-musica" style="color:#1db954">${musicaTocando}</span></p>
-        <div class="grid-status">
-          <div>👥 <strong>Ouvintes:</strong> <span id="st-ouvintes">${ouvintes.length}</span></div>
-          <div>🚀 <strong>Velocidade:</strong> <span id="st-vel">${velocidadeAtual}</span></div>
-          <div>🧠 <strong>RAM Render:</strong> <span id="st-mem">Carregando...</span></div>
-          <div>⏱ <strong>Tempo Online:</strong> <span id="st-up">Carregando...</span></div>
-        </div>
+           <div class="box">
+        <h3>🌐 Colar Link Direto (Rádio ou MP3)</h3>
+        <input type="text" id="nome-favorito" placeholder="Nome para salvar (Ex: Rádio Rock ou Música X)">
+        <input type="text" id="url" placeholder="Cole aqui http://... ou https://...">
+        <button onclick="comando('link')">▶ Tocar Agora</button>
+        <button class="sec" onclick="adicionarManual('radio')">⭐ Salvar em Rádios</button>
+        <button class="sec" onclick="adicionarManual('mp3')">⭐ Salvar em MP3</button>
+        <button class="sec" onclick="comando('pular')">⏭ Voltar p/ Pasta</button>
       </div>
+
+      <div class="box">
+        <h3>📻 Minhas Rádios Online Salvas</h3>
+        <ul id="lista-radios-salvas"></ul>
+      </div>
+
+      <div class="box">
+        <h3>🎵 Meus Links MP3 Diretos Salvos</h3>
+        <ul id="lista-mp3-salvos"></ul>
+      </div>
+
+      <div class="box">
+        <h3>📁 Músicas na Pasta (/musicas)</h3>
+        <ul>${botoesMusicas || '<li>Nenhuma música .mp3 na pasta ainda.</li>'}</ul>
+      </div>
+
+      <script>
+        const radiosPadrao = [
+          { titulo: '📻 Rádio Rock / Metal (ChroniX Aggression)', url: 'https://fastcast4u.com' },
+          { titulo: '📻 Rádio Pop / Hits Internacionais', url: 'https://streamtheworld.com' },
+          { titulo: '📻 Rádio Lo-Fi / Chill Beats 24h', url: 'https://ilovemusic.de' }
+        ];
+
+        function carregarFavoritos() {
+          let radios = JSON.parse(localStorage.getItem('fav_radios') || 'null');
+          if (!radios) {
+            radios = radiosPadrao;
+            localStorage.setItem('fav_radios', JSON.stringify(radios));
+          }
+          const mp3s = JSON.parse(localStorage.getItem('fav_mp3s') || '[]');
+
+          document.getElementById('lista-radios-salvas').innerHTML = radios.map((item, idx) => \`
+            <li>
+              <button onclick="comando('link', 0, '\${item.url}', '\${item.titulo.replace(/'/g, "")}')">▶ Tocar</button>
+              <span style="flex:1">\${item.titulo}</span>
+              <button class="off" style="padding:4px 8px; font-size:11px;" onclick="removerFav('radio', \${idx})">X</button>
+            </li>\`).join('') || '<li>Nenhuma rádio salva.</li>';
+
+          document.getElementById('lista-mp3-salvos').innerHTML = mp3s.map((item, idx) => \`
+            <li>
+              <button onclick="comando('link', 0, '\${item.url}', '\${item.titulo.replace(/'/g, "")}')">▶ Tocar</button>
+              <span style="flex:1">\${item.titulo}</span>
+              <button class="off" style="padding:4px 8px; font-size:11px;" onclick="removerFav('mp3', \${idx})">X</button>
+            </li>\`).join('') || '<li>Nenhum link MP3 salvo ainda. Use a busca ou cole um link acima!</li>';
+        }
+
+        function salvarFav(tipo, titulo, url) {
+          const chave = tipo === 'radio' ? 'fav_radios' : 'fav_mp3s';
+          const lista = JSON.parse(localStorage.getItem(chave) || '[]');
+          lista.push({ titulo, url });
+          localStorage.setItem(chave, JSON.stringify(lista));
+          carregarFavoritos();
+          alert('Salvo na sua lista de ' + (tipo === 'radio' ? 'Rádios!' : 'Links MP3!'));
+        }
+
+        function adicionarManual(tipo) {
+          const titulo = document.getElementById('nome-favorito').value.trim() || 'Link Salvo';
+          const url = document.getElementById('url').value.trim();
+          if (!url) return alert('Cole o link no campo abaixo antes de salvar!');
+          salvarFav(tipo, titulo, url);
+          document.getElementById('nome-favorito').value = '';
+        }
+
+        function removerFav(tipo, idx) {
+          const chave = tipo === 'radio' ? 'fav_radios' : 'fav_mp3s';
+          const lista = JSON.parse(localStorage.getItem(chave) || '[]');
+          lista.splice(idx, 1);
+          localStorage.setItem(chave, JSON.stringify(lista));
+          carregarFavoritos();
+        }
+
+        function obterSenha() {
+          return localStorage.getItem('dj_senha') || sessionStorage.getItem('dj_senha') || document.getElementById('senha').value;
+        }
+
+        function atualizarInterfaceLogin() {
+          const s = localStorage.getItem('dj_senha') || sessionStorage.getItem('dj_senha');
+          if (s) {
+            document.getElementById('box-login').classList.add('hidden');
+            document.getElementById('box-logado').style.display = 'flex';
+          } else {
+            document.getElementById('box-login').classList.remove('hidden');
+            document.getElementById('box-logado').style.display = 'none';
+          }
+        }
+
+        function salvarSenha() {
+          const val = document.getElementById('senha').value;
+          if (!val) return alert('Digite a senha primeiro!');
+          const manter = document.getElementById('manter-login').checked;
+          if (manter) localStorage.setItem('dj_senha', val);
+          else sessionStorage.setItem('dj_senha', val);
+          atualizarInterfaceLogin();
+        }
+
+        function sairSessao() {
+          localStorage.removeItem('dj_senha');
+          sessionStorage.removeItem('dj_senha');
+          document.getElementById('senha').value = '';
+          atualizarInterfaceLogin();
+        }
+
+        function comando(acao, indice = 0, urlCustom = '', tituloCustom = '') {
+          const senha = obterSenha();
+          const url = urlCustom || document.getElementById('url').value;
+          fetch('/api/comando', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ senha, acao, indice, url, tituloCustom })
+          })
+          .then(r => r.json())
+          .then(d => {
+            if (!d.ok) {
+              alert(d.msg);
+              if (d.msg.includes('Senha')) sairSessao();
+            } else {
+              atualizarStatus();
+            }
+          });
+        }
+
+        function buscarMusica() {
+          const termo = document.getElementById('termo-busca').value;
+          const senha = obterSenha();
+          if (!termo) return alert('Digite o nome de um artista ou música!');
+          document.getElementById('lista-busca').innerHTML = '<li>Buscando em Rádios, Archive.org e Audius...</li>';
+
+          fetch('/api/buscar', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ senha, termo })
+          })
+          .then(r => r.json())
+          .then(d => {
+            if (!d.ok) {
+              document.getElementById('lista-busca').innerHTML = '';
+              return alert(d.msg);
+            }
+            if (d.resultados.length === 0) {
+              document.getElementById('lista-busca').innerHTML = '<li>Nenhum resultado encontrado.</li>';
+              return;
+            }
+            document.getElementById('lista-busca').innerHTML = d.resultados.map(item => {
+              const titLimpo = item.titulo.replace(/'/g, "");
+              return \`<li>
+                <button onclick="comando('busca', 0, '\${item.streamUrl}', '\${titLimpo}')">▶</button>
+                <button class="sec" onclick="salvarFav('\${item.tipo}', '\${titLimpo}', '\${item.streamUrl}')">⭐</button>
+                <span>\${item.titulo}</span>
+              </li>\`;
+            }).join('');
+          });
+        }
+
+        function tocarAleatorio() {
+          const termo = document.getElementById('termo-busca').value;
+          const senha = obterSenha();
+          if (!termo) return alert('Digite o nome do artista primeiro!');
+          fetch('/api/aleatorio', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ senha, termo })
+          })
+          .then(r => r.json())
+          .then(d => {
+            if (!d.ok) alert(d.msg);
+            else atualizarStatus();
+          });
+        }
+
+        function atualizarStatus() {
+          fetch('/api/status').then(r => r.json()).then(st => {
+            const badge = document.getElementById('st-badge');
+            badge.innerText = st.online ? 'ON (AO VIVO)' : 'OFF (PAUSADA)';
+            badge.className = st.online ? 'badge-on' : 'badge-off';
+            document.getElementById('st-musica').innerText = st.musica;
+            document.getElementById('st-ouvintes').innerText = st.ouvintes;
+            document.getElementById('st-vel').innerText = st.velocidade;
+            document.getElementById('st-mem').innerText = st.memoria;
+            document.getElementById('st-up').innerText = st.uptime;
+          });
+        }
+
+        carregarFavoritos();
+        atualizarInterfaceLogin();
+        atualizarStatus();
+        setInterval(atualizarStatus, 4000);
+      </script>
+    </body>
+    </html>
+  `);
+});
+
 
       <div class="box" id="box-login">
         <label><strong>🔐 Senha do DJ:</strong></label>

@@ -5,17 +5,20 @@ const fetch = require('node-fetch');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const SENHA_DJ = "1234"; // <--- MUDE SUA SENHA DO PAINEL AQUI
+const SENHA_DJ = "1234"; // <--- TROQUE SUA SENHA AQUI
 
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 
 let ouvintes = [];
-let modoAtual = 'pasta'; // 'pasta' ou 'link'
+let radioLigada = true;
+let modoAtual = 'pasta';
 let urlExterna = '';
 let indiceMusica = 0;
-let musicaTocando = 'Nenhuma música carregada';
+let musicaTocando = 'Iniciando rádio...';
 let streamAtivo = null;
+let velocidadeAtual = '128 kbps (Normal)';
+const inicioServidor = Date.now();
 
 const pastaMusicas = path.join(__dirname, 'musicas');
 if (!fs.existsSync(pastaMusicas)) {
@@ -27,6 +30,7 @@ function listarMusicas() {
 }
 
 function enviarParaOuvintes(chunk) {
+  if (!radioLigada) return;
   ouvintes.forEach(res => {
     try {
       res.write(chunk);
@@ -34,16 +38,26 @@ function enviarParaOuvintes(chunk) {
   });
 }
 
-function tocarProxima() {
+function pararStreamAtual() {
   if (streamAtivo) {
-    streamAtivo.destroy();
+    try { streamAtivo.destroy(); } catch (e) {}
     streamAtivo = null;
   }
+}
 
-  if (modoAtual === 'link' && urlExterna) {
-    musicaTocando = `Link Externo: ${urlExterna}`;
+function tocarProxima() {
+  pararStreamAtual();
+
+  if (!radioLigada) {
+    musicaTocando = 'Rádio desligada (OFF) pelo DJ';
+    return;
+  }
+
+  if ((modoAtual === 'link' || modoAtual === 'busca') && urlExterna) {
+    velocidadeAtual = 'Stream Externo / API Direta';
     fetch(urlExterna)
       .then(res => {
+        if (!res.ok) throw new Error('Falha no link');
         streamAtivo = res.body;
         res.body.on('data', chunk => enviarParaOuvintes(chunk));
         res.body.on('end', () => {
@@ -56,6 +70,7 @@ function tocarProxima() {
         });
       })
       .catch(() => {
+        musicaTocando = 'Erro no link externo, voltando para pasta...';
         modoAtual = 'pasta';
         setTimeout(tocarProxima, 2000);
       });
@@ -64,7 +79,8 @@ function tocarProxima() {
 
   const lista = listarMusicas();
   if (lista.length === 0) {
-    musicaTocando = 'Pasta /musicas vazia. Suba arquivos .mp3 no GitHub ou cole um link no painel.';
+    musicaTocando = 'Pasta /musicas vazia. Use a Busca de Artista ou cole um Link!';
+    velocidadeAtual = 'Aguardando áudio';
     setTimeout(tocarProxima, 5000);
     return;
   }
@@ -72,17 +88,21 @@ function tocarProxima() {
   if (indiceMusica >= lista.length) indiceMusica = 0;
   const arquivo = lista[indiceMusica];
   const caminho = path.join(pastaMusicas, arquivo);
-  musicaTocando = arquivo;
+  musicaTocando = `📁 ${arquivo}`;
+  velocidadeAtual = '128 kbps (~16 KB/s)';
 
   const readStream = fs.createReadStream(caminho, { highWaterMark: 16 * 1024 });
   streamAtivo = readStream;
 
-  // Controla a velocidade aproximada de envio (128kbps ~ 16KB/s)
   readStream.on('data', chunk => {
+    if (!radioLigada) {
+      readStream.pause();
+      return;
+    }
     readStream.pause();
     enviarParaOuvintes(chunk);
     setTimeout(() => {
-      if (!readStream.destroyed) readStream.resume();
+      if (!readStream.destroyed && radioLigada) readStream.resume();
     }, 950);
   });
 
@@ -96,8 +116,54 @@ function tocarProxima() {
     setTimeout(tocarProxima, 1000);
   });
 }
+async function buscarAudius(termo) {
+  try {
+    const hostRes = await fetch('https://audius.co');
+    const hostJson = await hostRes.json();
+    const host = hostJson.data;
 
-// ROTA PRINCIPAL DO STREAM PARA COLAR NO IMVU
+    const searchRes = await fetch(`${host}/v1/tracks/search?query=${encodeURIComponent(termo)}&app_name=RadioIMVU`);
+    const searchJson = await searchRes.json();
+    return (searchJson.data || []).slice(0, 8).map(track => ({
+      titulo: `${track.user.name} - ${track.title}`,
+      streamUrl: `${host}/v1/tracks/${track.id}/stream?app_name=RadioIMVU`
+    }));
+  } catch (e) {
+    return [];
+  }
+}
+
+app.get('/', (req, res) => {
+  res.send(`
+    <html>
+    <head>
+      <title>Rádio IMVU - Servidor Ativo</title>
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+      <style>
+        body { font-family: sans-serif; background: #0f0f13; color: #fff; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+        .card { background: #1a1a24; padding: 30px; border-radius: 12px; max-width: 450px; text-align: center; box-shadow: 0 8px 24px rgba(0,0,0,0.5); }
+        h1 { color: #1db954; margin-top: 0; }
+        p { color: #ccc; line-height: 1.5; }
+        .btn { display: inline-block; padding: 12px 20px; margin: 10px 5px; border-radius: 6px; text-decoration: none; font-weight: bold; }
+        .btn-stream { background: #1db954; color: #000; }
+        .btn-dj { background: #333; color: #fff; border: 1px solid #555; }
+        code { background: #000; padding: 4px 8px; border-radius: 4px; color: #1db954; }
+      </style>
+    </head>
+    <body>
+      <div class="card">
+        <h1>📻 Rádio IMVU Online</h1>
+        <p>Você acessou o endereço raiz do servidor. Para usar a rádio, escolha uma das rotas abaixo:</p>
+        <p><strong>1. Para colocar na sala do IMVU:</strong><br>Adicione <code>/stream</code> no final do link.</p>
+        <p><strong>2. Para controlar as músicas:</strong><br>Adicione <code>/dj</code> no final do link.</p>
+        <a href="/stream" class="btn btn-stream">🔊 Ouvir Stream</a>
+        <a href="/dj" class="btn btn-dj">🎧 Abrir Painel DJ</a>
+      </div>
+    </body>
+    </html>
+  `);
+});
+
 app.get('/stream', (req, res) => {
   res.writeHead(200, {
     'Content-Type': 'audio/mpeg',
@@ -113,11 +179,25 @@ app.get('/stream', (req, res) => {
   });
 });
 
-// PAINEL DE CONTROLE DO DJ
+app.get('/api/status', (req, res) => {
+  const memMB = Math.round(process.memoryUsage().rss / 1024 / 1024);
+  const seg = Math.floor((Date.now() - inicioServidor) / 1000);
+  const min = Math.floor(seg / 60);
+  const hrs = Math.floor(min / 60);
+
+  res.json({
+    online: radioLigada,
+    musica: musicaTocando,
+    ouvintes: ouvintes.length,
+    velocidade: velocidadeAtual,
+    memoria: `${memMB} MB / 512 MB (Render Free)`,
+    uptime: `${hrs}h ${min % 60}m ${seg % 60}s`
+  });
+});
 app.get('/dj', (req, res) => {
   const lista = listarMusicas();
   const botoesMusicas = lista.map((m, i) => 
-    `<li><button onclick="comando('tocar', ${i})">▶ Tocar</button> ${m}</li>`
+    `<li><button onclick="comando('tocar', ${i})">▶ Tocar</button> <span>${m}</span></li>`
   ).join('');
 
   res.send(`
@@ -126,87 +206,258 @@ app.get('/dj', (req, res) => {
       <title>Painel DJ - IMVU</title>
       <meta name="viewport" content="width=device-width, initial-scale=1">
       <style>
-        body { font-family: sans-serif; background: #121212; color: #fff; padding: 20px; max-width: 600px; margin: auto; }
-        input, button { padding: 10px; margin: 5px 0; border-radius: 5px; border: none; }
-        input { width: 100%; background: #222; color: #fff; border: 1px solid #444; }
-        button { background: #1db954; color: #000; font-weight: bold; cursor: pointer; }
-        button.sec { background: #444; color: #fff; }
-        .box { background: #1e1e1e; padding: 15px; border-radius: 8px; margin-bottom: 15px; }
-        ul { list-style: none; padding: 0; }
-        li { padding: 6px 0; border-bottom: 1px solid #333; }
+        body { font-family: sans-serif; background: #121212; color: #fff; padding: 15px; max-width: 650px; margin: auto; }
+        input[type="text"], input[type="password"] { width: 100%; padding: 10px; margin: 5px 0; border-radius: 5px; border: 1px solid #444; background: #222; color: #fff; box-sizing: border-box; }
+        button { padding: 10px 14px; margin: 5px 3px 5px 0; border-radius: 5px; border: none; background: #1db954; color: #000; font-weight: bold; cursor: pointer; }
+        button.sec { background: #3a3a3a; color: #fff; }
+        button.off { background: #e53935; color: #fff; }
+        .box { background: #1e1e1e; padding: 15px; border-radius: 8px; margin-bottom: 15px; border: 1px solid #2c2c2c; }
+        .badge-on { background: #1db954; color: #000; padding: 3px 8px; border-radius: 4px; font-weight: bold; }
+        .badge-off { background: #e53935; color: #fff; padding: 3px 8px; border-radius: 4px; font-weight: bold; }
+        .grid-status { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 14px; margin-top: 10px; color: #ccc; }
+        ul { list-style: none; padding: 0; margin: 0; }
+        li { padding: 8px 0; border-bottom: 1px solid #333; display: flex; align-items: center; gap: 10px; }
+        .hidden { display: none; }
       </style>
     </head>
     <body>
       <h2>🎧 Painel DJ - Rádio IMVU</h2>
+
       <div class="box">
-        <strong>Tocando agora:</strong> <span style="color:#1db954">${musicaTocando}</span><br>
-        <strong>Ouvintes conectados:</strong> ${ouvintes.length}
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <div>Status da Rádio: <span id="st-badge" class="badge-on">ON</span></div>
+          <div>
+            <button onclick="comando('ligar')">⚡ Ligar</button>
+            <button class="off" onclick="comando('desligar')">⏹ Desligar</button>
+          </div>
+        </div>
+        <p style="margin: 10px 0 5px 0;"><strong>Tocando:</strong> <span id="st-musica" style="color:#1db954">${musicaTocando}</span></p>
+        <div class="grid-status">
+          <div>👥 <strong>Ouvintes:</strong> <span id="st-ouvintes">${ouvintes.length}</span></div>
+          <div>🚀 <strong>Velocidade:</strong> <span id="st-vel">${velocidadeAtual}</span></div>
+          <div>🧠 <strong>RAM Render:</strong> <span id="st-mem">Carregando...</span></div>
+          <div>⏱ <strong>Tempo Online:</strong> <span id="st-up">Carregando...</span></div>
+        </div>
+      </div>
+
+      <div class="box" id="box-login">
+        <label><strong>🔐 Senha do DJ:</strong></label>
+        <input type="password" id="senha" placeholder="Digite sua senha para liberar os comandos">
+        <label style="font-size: 13px; color: #bbb; display:block; margin: 5px 0;">
+          <input type="checkbox" id="manter-login"> Manter logado mesmo se fechar o navegador
+        </label>
+        <button onclick="salvarSenha()">Desbloquear Painel</button>
+      </div>
+
+      <div class="box hidden" id="box-logado" style="display:flex; justify-content:space-between; align-items:center;">
+        <span style="color:#1db954; font-size:14px;">🔓 Painel desbloqueado na sessão</span>
+        <button class="sec" onclick="sairSessao()" style="padding:5px 10px; font-size:12px;">Sair / Bloquear</button>
       </div>
 
       <div class="box">
-        <label>Senha do DJ:</label>
-        <input type="password" id="senha" placeholder="Digite sua senha (padrão: 1234)">
+        <h3>🔎 Buscar Artista ou Música (Online)</h3>
+        <input type="text" id="termo-busca" placeholder="Ex: Alok, Linkin Park, Hungria...">
+        <button onclick="buscarMusica()">🔍 Buscar Lista</button>
+        <button class="sec" onclick="tocarAleatorio()">🎲 Tocar Aleatório do Artista</button>
+        <ul id="lista-busca" style="margin-top:10px;"></ul>
       </div>
 
       <div class="box">
-        <h3>🌐 Tocar Link Externo (Rádio ou MP3 direto)</h3>
-        <input type="text" id="url" placeholder="Cole aqui o link http://... ou https://...">
-        <button onclick="comando('link')">Tocar Link Agora</button>
+        <h3>🌐 Colar Link Direto (Rádio ou MP3)</h3>
+        <input type="text" id="url" placeholder="Cole aqui http://... ou https://...">
+        <button onclick="comando('link')">▶ Tocar Link</button>
         <button class="sec" onclick="comando('pular')">⏭ Pular / Voltar p/ Pasta</button>
       </div>
 
       <div class="box">
-        <h3>🎵 Músicas na Pasta (/musicas)</h3>
+        <h3>📁 Músicas na Pasta (/musicas)</h3>
         <ul>${botoesMusicas || '<li>Nenhuma música .mp3 na pasta ainda.</li>'}</ul>
       </div>
-
       <script>
-        function comando(acao, indice = 0) {
-          const senha = document.getElementById('senha').value;
-          const url = document.getElementById('url').value;
+        function obterSenha() {
+          return localStorage.getItem('dj_senha') || sessionStorage.getItem('dj_senha') || document.getElementById('senha').value;
+        }
+
+        function atualizarInterfaceLogin() {
+          const s = localStorage.getItem('dj_senha') || sessionStorage.getItem('dj_senha');
+          if (s) {
+            document.getElementById('box-login').classList.add('hidden');
+            document.getElementById('box-logado').style.display = 'flex';
+          } else {
+            document.getElementById('box-login').classList.remove('hidden');
+            document.getElementById('box-logado').style.display = 'none';
+          }
+        }
+
+        function salvarSenha() {
+          const val = document.getElementById('senha').value;
+          if (!val) return alert('Digite a senha primeiro!');
+          const manter = document.getElementById('manter-login').checked;
+          if (manter) localStorage.setItem('dj_senha', val);
+          else sessionStorage.setItem('dj_senha', val);
+          atualizarInterfaceLogin();
+        }
+
+        function sairSessao() {
+          localStorage.removeItem('dj_senha');
+          sessionStorage.removeItem('dj_senha');
+          document.getElementById('senha').value = '';
+          atualizarInterfaceLogin();
+        }
+
+        function comando(acao, indice = 0, urlCustom = '', tituloCustom = '') {
+          const senha = obterSenha();
+          const url = urlCustom || document.getElementById('url').value;
           fetch('/api/comando', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ senha, acao, indice, url })
+            body: JSON.stringify({ senha, acao, indice, url, tituloCustom })
           })
           .then(r => r.json())
           .then(d => {
-            alert(d.msg);
-            if(d.ok) location.reload();
+            if (!d.ok) {
+              alert(d.msg);
+              if (d.msg.includes('Senha')) sairSessao();
+            } else {
+              atualizarStatus();
+            }
           });
         }
+
+        function buscarMusica() {
+          const termo = document.getElementById('termo-busca').value;
+          const senha = obterSenha();
+          if (!termo) return alert('Digite o nome de um artista ou música!');
+          document.getElementById('lista-busca').innerHTML = '<li>Buscando músicas...</li>';
+
+          fetch('/api/buscar', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ senha, termo })
+          })
+          .then(r => r.json())
+          .then(d => {
+            if (!d.ok) {
+              document.getElementById('lista-busca').innerHTML = '';
+              return alert(d.msg);
+            }
+            if (d.resultados.length === 0) {
+              document.getElementById('lista-busca').innerHTML = '<li>Nenhuma música encontrada com esse nome.</li>';
+              return;
+            }
+            document.getElementById('lista-busca').innerHTML = d.resultados.map(item => 
+              \`<li><button onclick="comando('busca', 0, '\${item.streamUrl}', '\${item.titulo.replace(/'/g, "")}')">▶ Tocar</button> <span>\${item.titulo}</span></li>\`
+            ).join('');
+          });
+        }
+
+        function tocarAleatorio() {
+          const termo = document.getElementById('termo-busca').value;
+          const senha = obterSenha();
+          if (!termo) return alert('Digite o nome do artista primeiro!');
+          fetch('/api/aleatorio', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ senha, termo })
+          })
+          .then(r => r.json())
+          .then(d => {
+            if (!d.ok) alert(d.msg);
+            else atualizarStatus();
+          });
+        }
+
+        function atualizarStatus() {
+          fetch('/api/status').then(r => r.json()).then(st => {
+            const badge = document.getElementById('st-badge');
+            badge.innerText = st.online ? 'ON (AO VIVO)' : 'OFF (PAUSADA)';
+            badge.className = st.online ? 'badge-on' : 'badge-off';
+            document.getElementById('st-musica').innerText = st.musica;
+            document.getElementById('st-ouvintes').innerText = st.ouvintes;
+            document.getElementById('st-vel').innerText = st.velocidade;
+            document.getElementById('st-mem').innerText = st.memoria;
+            document.getElementById('st-up').innerText = st.uptime;
+          });
+        }
+
+        atualizarInterfaceLogin();
+        atualizarStatus();
+        setInterval(atualizarStatus, 4000);
       </script>
     </body>
     </html>
   `);
 });
 
-app.post('/api/comando', (req, res) => {
-  const { senha, acao, indice, url } = req.body;
-  if (senha !== SENHA_DJ) return res.json({ ok: false, msg: 'Senha incorreta!' });
+app.post('/api/buscar', async (req, res) => {
+  const { senha, termo } = req.body;
+  if (senha !== SENHA_DJ) return res.json({ ok: false, msg: 'Senha incorreta! Digite a senha do DJ.' });
+  const resultados = await buscarAudius(termo);
+  res.json({ ok: true, resultados });
+});
 
+app.post('/api/aleatorio', async (req, res) => {
+  const { senha, termo } = req.body;
+  if (senha !== SENHA_DJ) return res.json({ ok: false, msg: 'Senha incorreta! Digite a senha do DJ.' });
+  const resultados = await buscarAudius(termo);
+  if (resultados.length === 0) return res.json({ ok: false, msg: 'Nenhuma música encontrada para esse artista.' });
+  const sorteada = resultados[Math.floor(Math.random() * resultados.length)];
+  modoAtual = 'busca';
+  urlExterna = sorteada.streamUrl;
+  musicaTocando = `🎲 ${sorteada.titulo}`;
+  tocarProxima();
+  res.json({ ok: true, msg: `Tocando: ${sorteada.titulo}` });
+});
+
+app.post('/api/comando', (req, res) => {
+  const { senha, acao, indice, url, tituloCustom } = req.body;
+  if (senha !== SENHA_DJ) return res.json({ ok: false, msg: 'Senha incorreta! Digite a senha do DJ.' });
+
+  if (acao === 'ligar') {
+    if (!radioLigada) {
+      radioLigada = true;
+      tocarProxima();
+    }
+    return res.json({ ok: true, msg: 'Rádio ligada!' });
+  }
+  if (acao === 'desligar') {
+    radioLigada = false;
+    pararStreamAtual();
+    musicaTocando = 'Rádio desligada (OFF) pelo DJ';
+    return res.json({ ok: true, msg: 'Rádio desligada!' });
+  }
   if (acao === 'pular') {
+    radioLigada = true;
     modoAtual = 'pasta';
     indiceMusica++;
     tocarProxima();
-    return res.json({ ok: true, msg: 'Pulando para próxima música da pasta...' });
+    return res.json({ ok: true, msg: 'Pulando para próxima música...' });
   }
   if (acao === 'tocar') {
+    radioLigada = true;
     modoAtual = 'pasta';
     indiceMusica = indice;
     tocarProxima();
     return res.json({ ok: true, msg: 'Música selecionada!' });
   }
   if (acao === 'link' && url) {
+    radioLigada = true;
     modoAtual = 'link';
     urlExterna = url.trim();
+    musicaTocando = `🌐 Link: ${urlExterna}`;
     tocarProxima();
-    return res.json({ ok: true, msg: 'Conectando ao link externo...' });
+    return res.json({ ok: true, msg: 'Conectando ao link...' });
+  }
+  if (acao === 'busca' && url) {
+    radioLigada = true;
+    modoAtual = 'busca';
+    urlExterna = url.trim();
+    musicaTocando = `🎵 ${tituloCustom}`;
+    tocarProxima();
+    return res.json({ ok: true, msg: 'Tocando música!' });
   }
   res.json({ ok: false, msg: 'Comando inválido.' });
 });
-
-app.get('/', (req, res) => res.send('Rádio IMVU Online! Use /stream na sala ou /dj para controlar.'));
 
 app.listen(PORT, () => {
   console.log('Servidor rodando na porta ' + PORT);

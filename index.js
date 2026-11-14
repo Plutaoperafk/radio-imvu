@@ -579,12 +579,13 @@ app.get('/dj', (req, res) => {
           }).then(r => r.json()).then(d => { if (!d.ok) alert(d.msg); else atualizarStatus(); });
         }
 
-        function enviarArquivoGitHub() {
+          function enviarArquivoGitHub() {
           const input = document.getElementById('arquivo-mp3');
-          if (!input.files || !input.files) return alert('Escolha um arquivo .mp3 primeiro!');
+          if (!input.files || !input.files[0]) return alert('Escolha um arquivo .mp3 primeiro!');
           const formData = new FormData();
           formData.append('senha', obterSenha());
-          formData.append('arquivo', input.files);
+          formData.append('arquivo', input.files[0]);
+
 
           const btn = document.getElementById('btn-enviar-gh');
           btn.disabled = true; btn.innerText = 'Enviando...';

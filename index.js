@@ -216,6 +216,35 @@ app.get('/stream', (req, res) => {
   });
 });
 
+// ROTA PARA RECEBER ÁUDIO AO VIVO DO MICROFONE DO DJ
+let modoAoVivo = false;
+
+app.post('/api/ao-vivo', (req, res) => {
+  const senha = req.headers['x-senha'];
+  if (senha !== SENHA_DJ) return res.status(401).end();
+
+  modoAoVivo = true;
+  radioLigada = true;
+  pararStreamAtual();
+  musicaTocando = '🎙️ LOCUTOR AO VIVO NO MICROFONE!';
+  velocidadeAtual = 'Transmissão Mic Ao Vivo';
+
+  req.on('data', chunk => {
+    enviarParaOuvintes(chunk);
+  });
+
+  req.on('end', () => {
+    modoAoVivo = false;
+    tocarProxima();
+    res.end();
+  });
+
+  req.on('error', () => {
+    modoAoVivo = false;
+    tocarProxima();
+  });
+});
+
 app.get('/api/status', (req, res) => {
   const memMB = Math.round(process.memoryUsage().rss / 1024 / 1024);
   const seg = Math.floor((Date.now() - inicioServidor) / 1000);
@@ -262,6 +291,23 @@ app.get('/dj', (req, res) => {
     </head>
     <body>
       <h2>🎧 Painel DJ - Rádio IMVU</h2>
+      
+      <div class="box" style="border-color: #ff5252;">
+        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+          <div>
+            <strong>🎙️ Locutor Ao Vivo (Voz + Música):</strong><br>
+            <span id="status-mic" style="font-size:13px; color:#bbb;">Microfone desligado</span>
+          </div>
+          <div>
+            <button id="btn-mic-on" style="background:#ff5252; color:#fff;" onclick="iniciarMicAoVivo()">🎙️ Entrar Ao Vivo</button>
+            <button id="btn-mic-off" class="sec hidden" onclick="pararMicAoVivo()">⏹ Encerrar Mic</button>
+          </div>
+        </div>
+        <div style="margin-top:8px; font-size:12px; color:#aaa;">
+          <label><input type="checkbox" id="mic-com-musica" checked> Manter música de fundo tocando baixo enquanto falo</label>
+        </div>
+      </div>
+      <script src="https://jsdelivr.net"></script>
 
       <div class="box">
         <div style="display:flex; justify-content:space-between; align-items:center;">
@@ -492,6 +538,99 @@ app.get('/dj', (req, res) => {
             else atualizarStatus();
           });
         }
+
+        let micStream = null;
+        let audioCtx = null;
+        let scriptNode = null;
+        let controllerEnvio = null;
+
+        async function iniciarMicAoVivo() {
+          const senha = obterSenha();
+          if (!senha) return alert('Desbloqueie o painel com a sua senha primeiro!');
+
+          try {
+            micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 44100 });
+            const destino = audioCtx.createMediaStreamDestination();
+
+            // 1. Entrada do Microfone
+            const micSource = audioCtx.createMediaStreamSource(micStream);
+            const micGain = audioCtx.createGain();
+            micGain.gain.value = 1.3; // Volume da sua voz
+            micSource.connect(micGain);
+            micGain.connect(destino);
+
+            // 2. Música de fundo da própria rádio (se marcado)
+            let audioFundo = null;
+            if (document.getElementById('mic-com-musica').checked) {
+              audioFundo = new Audio('/stream');
+              audioFundo.crossOrigin = 'anonymous';
+              const fundoSource = audioCtx.createMediaElementSource(audioFundo);
+              const fundoGain = audioCtx.createGain();
+              fundoGain.gain.value = 0.25; // Volume baixo da música de fundo (25%)
+              fundoSource.connect(fundoGain);
+              fundoGain.connect(destino);
+              audioFundo.play().catch(() => {});
+            }
+
+            // 3. Codificador MP3 em tempo real
+            const mp3encoder = new lamejs.Mp3Encoder(1, 44100, 128);
+            const mixerSource = audioCtx.createMediaStreamSource(destino.stream);
+            scriptNode = audioCtx.createScriptProcessor(4096, 1, 1);
+
+            const streamUpload = new ReadableStream({
+              start(controller) {
+                scriptNode.onaudioprocess = function(e) {
+                  const input = e.inputBuffer.getChannelData(0);
+                  const samples = new Int16Array(input.length);
+                  for (let i = 0; i < input.length; i++) {
+                    const s = Math.max(-1, Math.min(1, input[i]));
+                    samples[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+                  }
+                  const mp3buf = mp3encoder.encodeBuffer(samples);
+                  if (mp3buf.length > 0) {
+                    controller.enqueue(new Uint8Array(mp3buf));
+                  }
+                };
+              }
+            });
+
+            mixerSource.connect(scriptNode);
+            scriptNode.connect(audioCtx.destination);
+
+            controllerEnvio = new AbortController();
+            fetch('/api/ao-vivo', {
+              method: 'POST',
+              headers: { 'x-senha': senha, 'Content-Type': 'audio/mpeg' },
+              body: streamUpload,
+              duplex: 'half',
+              signal: controllerEnvio.signal
+            }).catch(() => {});
+
+            document.getElementById('btn-mic-on').classList.add('hidden');
+            document.getElementById('btn-mic-off').classList.remove('hidden');
+            document.getElementById('status-mic').innerText = '🔴 TRANSMITINDO AO VIVO PARA A SALA!';
+            document.getElementById('status-mic').style.color = '#ff5252';
+            window._audioFundoRef = audioFundo;
+          } catch (err) {
+            alert('Erro ao acessar microfone: ' + err.message);
+          }
+        }
+
+        function pararMicAoVivo() {
+          if (controllerEnvio) controllerEnvio.abort();
+          if (scriptNode) scriptNode.disconnect();
+          if (audioCtx) audioCtx.close();
+          if (micStream) micStream.getTracks().forEach(t => t.stop());
+          if (window._audioFundoRef) { window._audioFundoRef.pause(); window._audioFundoRef = null; }
+
+          document.getElementById('btn-mic-on').classList.remove('hidden');
+          document.getElementById('btn-mic-off').classList.add('hidden');
+          document.getElementById('status-mic').innerText = 'Microfone desligado';
+          document.getElementById('status-mic').style.color = '#bbb';
+          comando('pular'); // Volta para a programação normal da rádio
+        }
+
 
         function atualizarStatus() {
           fetch('/api/status').then(r => r.json()).then(st => {

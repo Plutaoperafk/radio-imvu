@@ -186,6 +186,8 @@ app.get('/', (req, res) => {
         .btn-dj { background: #333; color: #fff; border: 1px solid #555; }
         code { background: #000; padding: 4px 8px; border-radius: 4px; color: #1db954; }
       </style>
+<script src="https://jsdelivr.net"></script>
+      
     </head>
     <body>
       <div class="card">
@@ -307,7 +309,7 @@ app.get('/dj', (req, res) => {
           <label><input type="checkbox" id="mic-com-musica" checked> Manter música de fundo tocando baixo enquanto falo</label>
         </div>
       </div>
-      <script src="https://jsdelivr.net"></script>
+      
 
       <div class="box">
         <div style="display:flex; justify-content:space-between; align-items:center;">

@@ -118,9 +118,32 @@ function tocarProxima() {
 }
 async function buscarAudius(termo) {
   try {
+    // 1. Tenta primeiro na API aberta JioSaavn (catálogo global com MP3 direto)
+    const res1 = await fetch(`https://saavn.dev{encodeURIComponent(termo)}&limit=10`, {
+      headers: { 'User-Agent': 'Mozilla/5.0' }
+    });
+    if (res1.ok) {
+      const json1 = await res1.json();
+      const lista1 = json1?.data?.results || [];
+      if (lista1.length > 0) {
+        return lista1.map(track => {
+          const links = track.downloadUrl || [];
+          const melhorAudio = links[links.length - 1]?.url || links[0]?.url || '';
+          const artista = track.artists?.primary?.[0]?.name || 'Artista';
+          return {
+            titulo: `${artista} - ${track.name}`,
+            streamUrl: melhorAudio
+          };
+        }).filter(item => item.streamUrl);
+      }
+    }
+  } catch (e) {}
+
+  try {
+    // 2. Plano B: API Audius (corrigida para pegar o primeiro servidor da lista)
     const hostRes = await fetch('https://audius.co');
     const hostJson = await hostRes.json();
-    const host = hostJson.data;
+    const host = Array.isArray(hostJson.data) ? hostJson.data[0] : hostJson.data;
 
     const searchRes = await fetch(`${host}/v1/tracks/search?query=${encodeURIComponent(termo)}&app_name=RadioIMVU`);
     const searchJson = await searchRes.json();
@@ -132,6 +155,7 @@ async function buscarAudius(termo) {
     return [];
   }
 }
+
 
 app.get('/', (req, res) => {
   res.send(`

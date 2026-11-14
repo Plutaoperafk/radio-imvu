@@ -117,27 +117,38 @@ function tocarProxima() {
   });
 }
 async function buscarAudius(termo) {
+  let resultados = [];
+
+  // 1. Busca faixas na API Oficial da Audius
   try {
-    // 1. Tenta primeiro na API aberta JioSaavn (catálogo global com MP3 direto)
-    const res1 = await fetch(`https://saavn.dev{encodeURIComponent(termo)}&limit=10`, {
-      headers: { 'User-Agent': 'Mozilla/5.0' }
-    });
-    if (res1.ok) {
-      const json1 = await res1.json();
-      const lista1 = json1?.data?.results || [];
-      if (lista1.length > 0) {
-        return lista1.map(track => {
-          const links = track.downloadUrl || [];
-          const melhorAudio = links[links.length - 1]?.url || links[0]?.url || '';
-          const artista = track.artists?.primary?.[0]?.name || 'Artista';
-          return {
-            titulo: `${artista} - ${track.name}`,
-            streamUrl: melhorAudio
-          };
-        }).filter(item => item.streamUrl);
-      }
+    const searchRes = await fetch(`https://audius.co{encodeURIComponent(termo)}&app_name=RadioIMVU`);
+    if (searchRes.ok) {
+      const searchJson = await searchRes.json();
+      const tracks = (searchJson.data || []).slice(0, 6).map(track => ({
+        titulo: `🎵 ${track.user?.name || 'Artista'} - ${track.title}`,
+        streamUrl: `https://audius.co{track.id}/stream?app_name=RadioIMVU`
+      }));
+      resultados = resultados.concat(tracks);
     }
   } catch (e) {}
+
+  // 2. Busca estações de rádio temáticas no Radio Browser (nunca bloqueia)
+  try {
+    const radioRes = await fetch(`https://radio-browser.info{encodeURIComponent(termo)}&limit=6&hidebroken=true`, {
+      headers: { 'User-Agent': 'RadioIMVU/1.0' }
+    });
+    if (radioRes.ok) {
+      const stations = await radioRes.json();
+      const radios = (stations || []).filter(s => s.url_resolved).map(s => ({
+        titulo: `📻 Rádio: ${s.name.trim()} (${s.countrycode || 'Web'})`,
+        streamUrl: s.url_resolved
+      }));
+      resultados = resultados.concat(radios);
+    }
+  } catch (e) {}
+
+  return resultados;
+}
 
   try {
     // 2. Plano B: API Audius (corrigida para pegar o primeiro servidor da lista)

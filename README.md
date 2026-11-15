@@ -97,3 +97,11 @@ This project solves that problem by creating a **free, self-hosted cloud radio s
 * **Auto-Sleep (Render Free):** After 15 minutes with zero active listeners, the server spins down and automatically wakes up within ~30 seconds when `/stream` or `/dj` is accessed.
 * **Playlist Persistence:** Saved radio stations and external MP3 links are stored in your browser's `localStorage` so they remain intact across server restarts.
 * **Security:** Never hardcode your `SENHA_DJ` or `GITHUB_TOKEN` inside this `README.md`.
+
+* ---
+
+## 🤝 Credits & Development Transparency
+
+* **Project Concept, Architecture & Testing:** Created and configured by **Plutaoperafk**.
+* **AI-Assisted Development:** Built with iterative code generation, debugging, and UI structuring assisted by **Google Gemini (LLM)** — covering Node.js stream buffering, Web Audio API live microphone mixing, GitHub Contents API integration, and Render free-tier memory optimization.
+

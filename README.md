@@ -1,4 +1,9 @@
 # 📻 IMVU Web Radio — Studio Web DJ Console (v3.0)
+
+
+<img width="1365" height="617" alt="Console Estúdio DJ - IMVU" src="https://github.com/user-attachments/assets/6711e8f7-462b-4262-bc5f-857f49c82c58" />
+
+
  
 ![Node.js](https://shields.io)
 ![Express](https://shields.io)

@@ -245,7 +245,7 @@ app.post('/api/github-upload', upload.single('arquivo'), async (req, res) => {
   if (!req.file) return res.json({ ok: false, msg: 'Selecione um arquivo .mp3!' });
 
   const nomeLimpo = req.file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
-  const apiUrl = 'https://github.com' + GITHUB_USER + '/' + GITHUB_REPO + '/contents/musicas/' + nomeLimpo;
+  const apiUrl = 'https://' + 'api.' + 'github.com' + '/repos/' + GITHUB_USER + '/' + GITHUB_REPO + '/contents/musicas/' + nomeLimpo;
   const headersGH = {
     'Authorization': 'Bearer ' + GITHUB_TOKEN,
     'Content-Type': 'application/json',
@@ -295,7 +295,7 @@ app.post('/api/github-delete', async (req, res) => {
   if (senha !== SENHA_DJ) return res.json({ ok: false, msg: 'Senha incorreta!' });
   if (!GITHUB_TOKEN) return res.json({ ok: false, msg: 'Configure GITHUB_TOKEN no Render!' });
 
-  const apiUrl = 'https://github.com' + GITHUB_USER + '/' + GITHUB_REPO + '/contents/musicas/' + nome;
+  const apiUrl = 'https://' + 'api.' + 'github.com' + '/repos/' + GITHUB_USER + '/' + GITHUB_REPO + '/contents/musicas/' + nome;
   const headersGH = {
     'Authorization': 'Bearer ' + GITHUB_TOKEN,
     'Content-Type': 'application/json',

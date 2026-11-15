@@ -20,12 +20,16 @@ app.use(express.json());
 let ouvintes = [];
 let radioLigada = true;
 let modoAoVivo = false;
-let modoAtual = 'pasta';
+let modoAtual = 'pasta'; // 'pasta' ou 'radio'
 let urlExterna = '';
+let nomeFonteAtual = 'Pasta Local';
+let musicaWinamp = '';
+let statusBuffer = 'Pronto';
 let indiceMusica = 0;
-let musicaTocando = 'Iniciando console de rádio...';
 let streamAtivo = null;
 let velocidadeAtual = '128 kbps (Estúdio)';
+let ultimoDadoRecebido = Date.now();
+let trocaEmAndamento = false;
 const inicioServidor = Date.now();
 
 const pastaMusicas = path.join(__dirname, 'musicas');
@@ -36,7 +40,7 @@ function listarMusicas() {
 }
 
 function enviarParaOuvintes(chunk) {
-  if (!radioLigada) return;
+  if (!radioLigada || trocaEmAndamento) return;
   ouvintes.forEach(res => { try { res.write(chunk); } catch (e) {} });
 }
 
@@ -47,36 +51,88 @@ function pararStreamAtual() {
   }
 }
 
+// Vigia a cada 2 segundos: se estiver no Modo Rádio e ficar 10s sem som, pula para Pasta MP3
+setInterval(() => {
+  if (!radioLigada || modoAoVivo || trocaEmAndamento) return;
+  if (modoAtual === 'radio') {
+    const segundosSemSom = Math.floor((Date.now() - ultimoDadoRecebido) / 1000);
+    if (segundosSemSom >= 10) {
+      statusBuffer = 'Rádio caiu (10s muda) -> Voltando p/ MP3';
+      modoAtual = 'pasta';
+      tocarProxima();
+    } else if (segundosSemSom >= 3) {
+      statusBuffer = '⏳ Oscilando (' + segundosSemSom + 's/10s)...';
+    } else {
+      statusBuffer = '🟢 Sinal Estável';
+    }
+  } else {
+    statusBuffer = '🟢 Disco Local OK';
+  }
+}, 2000);
+
+function iniciarComBuffer(callback) {
+  pararStreamAtual();
+  trocaEmAndamento = true;
+  statusBuffer = '⏳ Carregando Buffer (2s)...';
+  velocidadeAtual = 'Sincronizando áudio...';
+  setTimeout(() => {
+    trocaEmAndamento = false;
+    callback();
+  }, 1800);
+}
+
 function tocarProxima() {
   pararStreamAtual();
   if (modoAoVivo) return;
 
   if (!radioLigada) {
-    musicaTocando = 'TRANSMISSÃO PAUSADA (OFF AIR)';
+    nomeFonteAtual = 'Rádio Desligada';
+    musicaWinamp = 'TRANSMISSÃO PAUSADA (OFF AIR)';
+    statusBuffer = 'Pausado';
     return;
   }
 
-  if ((modoAtual === 'link' || modoAtual === 'busca') && urlExterna) {
-    velocidadeAtual = 'Stream Externo / API Direta';
-    fetch(urlExterna, { headers: { 'User-Agent': 'Mozilla/5.0' } })
-      .then(res => {
-        if (!res.ok) throw new Error('Falha no link');
-        streamAtivo = res.body;
-        res.body.on('data', chunk => enviarParaOuvintes(chunk));
-        res.body.on('end', () => { modoAtual = 'pasta'; tocarProxima(); });
-        res.body.on('error', () => { modoAtual = 'pasta'; setTimeout(tocarProxima, 2000); });
-      })
-      .catch(() => {
-        musicaTocando = 'Falha no link externo, retornando à pasta...';
-        modoAtual = 'pasta';
-        setTimeout(tocarProxima, 2000);
-      });
+  if (modoAtual === 'radio' && urlExterna) {
+    iniciarComBuffer(() => {
+      ultimoDadoRecebido = Date.now();
+      velocidadeAtual = 'Rádio Online (Ao Vivo)';
+      fetch(urlExterna, { headers: { 'User-Agent': 'WinampMPEG/5.0', 'Icy-MetaData': '1' } })
+        .then(res => {
+          if (!res.ok) throw new Error('Falha HTTP');
+          const icyName = res.headers.get('icy-name');
+          if (icyName && nomeFonteAtual.startsWith('🌐')) nomeFonteAtual = '📻 ' + icyName;
+          musicaWinamp = 'Transmissão ao vivo da emissora';
+          streamAtivo = res.body;
+
+          res.body.on('data', chunk => {
+            ultimoDadoRecebido = Date.now();
+            enviarParaOuvintes(chunk);
+          });
+          res.body.on('end', () => {
+            if (modoAtual === 'radio') {
+              statusBuffer = 'Reconectando emissora...';
+              setTimeout(tocarProxima, 2500);
+            }
+          });
+          res.body.on('error', () => {
+            statusBuffer = 'Erro no sinal da rádio...';
+          });
+        })
+        .catch(() => {
+          statusBuffer = 'Rádio offline -> Indo p/ MP3';
+          modoAtual = 'pasta';
+          setTimeout(tocarProxima, 1500);
+        });
+    });
     return;
   }
 
+  // MODO PASTA MP3
+  modoAtual = 'pasta';
   const lista = listarMusicas();
   if (lista.length === 0) {
-    musicaTocando = 'Pasta /musicas vazia. Use a Busca ou suas Listas Salvas!';
+    nomeFonteAtual = 'Pasta /musicas vazia';
+    musicaWinamp = 'Adicione MP3s ou escolha uma Rádio';
     velocidadeAtual = 'Standby';
     setTimeout(tocarProxima, 5000);
     return;
@@ -85,22 +141,24 @@ function tocarProxima() {
   if (indiceMusica >= lista.length) indiceMusica = 0;
   const arquivo = lista[indiceMusica];
   const caminho = path.join(pastaMusicas, arquivo);
-  musicaTocando = `📁 ${arquivo}`;
-  velocidadeAtual = '128 kbps (~16 KB/s)';
+  nomeFonteAtual = '📁 Pasta GitHub (' + (indiceMusica + 1) + '/' + lista.length + ')';
+  musicaWinamp = arquivo.replace('.mp3', '');
+  velocidadeAtual = '128 kbps (~24 KB/s)';
 
   const readStream = fs.createReadStream(caminho, { highWaterMark: 24 * 1024 });
   streamAtivo = readStream;
 
   readStream.on('data', chunk => {
-    if (!radioLigada || modoAoVivo) { readStream.pause(); return; }
+    if (!radioLigada || modoAoVivo || modoAtual !== 'pasta') { readStream.pause(); return; }
     readStream.pause();
     enviarParaOuvintes(chunk);
-    setTimeout(() => { if (!readStream.destroyed && radioLigada && !modoAoVivo) readStream.resume(); }, 850);
+    setTimeout(() => { if (!readStream.destroyed && radioLigada && !modoAoVivo && modoAtual === 'pasta') readStream.resume(); }, 850);
   });
 
-  readStream.on('end', () => { indiceMusica++; tocarProxima(); });
-  readStream.on('error', () => { indiceMusica++; setTimeout(tocarProxima, 1000); });
+  readStream.on('end', () => { if (modoAtual === 'pasta') { indiceMusica++; tocarProxima(); } });
+  readStream.on('error', () => { if (modoAtual === 'pasta') { indiceMusica++; setTimeout(tocarProxima, 1000); } });
 }
+
 async function buscarFontesOnline(termo) {
   let resultados = [];
 
@@ -227,7 +285,10 @@ app.get('/api/status', (req, res) => {
   res.json({
     online: radioLigada,
     aoVivo: modoAoVivo,
-    musica: musicaTocando,
+    modoAtual: modoAtual,
+    fonte: nomeFonteAtual,
+    musica: musicaWinamp,
+    buffer: statusBuffer,
     ouvintes: ouvintes.length,
     velocidade: velocidadeAtual,
     memoria: memMB + ' MB / 512 MB',
@@ -236,6 +297,7 @@ app.get('/api/status', (req, res) => {
     arquivosPasta: listarMusicas()
   });
 });
+
 
 app.post('/api/github-upload', upload.single('arquivo'), async (req, res) => {
   if (req.body.senha !== SENHA_DJ) {
@@ -421,70 +483,106 @@ app.post('/api/github-delete', async (req, res) => {
   }
 });
 app.get('/dj', (req, res) => {
-  res.send(`
-    <!DOCTYPE html>
-    <html><head><title>Console Estúdio DJ - IMVU</title><meta name="viewport" content="width=device-width, initial-scale=1">
-    <style>
-      *{box-sizing:border-box;margin:0;padding:0}
-      body{font-family:'Segoe UI',system-ui,sans-serif;background:#09090b;color:#f4f4f5;height:100vh;overflow:hidden;display:flex;flex-direction:column}
-      @media(max-width:850px){body{height:auto;overflow:auto}}
+  res.send(`        <header>
+          <div class="brand">
+            <span id="st-badge" class="on-air air-on">ON AIR</span>
+            <div>
+              <button class="btn-primary" onclick="comando('ligar')">⚡ Ligar</button>
+              <button class="btn-danger" onclick="comando('desligar')">⏹ Pausar</button>
+              <button class="btn-sec" onclick="comando('pular')">⏭ Pular MP3</button>
+              <button id="btn-troca-modo" class="btn-fav" onclick="alternarModo()">🔄 Ir p/ Rádio</button>
+            </div>
+          </div>
 
-      #login-screen{position:fixed;inset:0;background:radial-gradient(circle at center,#18181b 0%,#09090b 100%);display:flex;justify-content:center;align-items:center;z-index:999}
-      .login-card{background:#121215;border:1px solid #27272a;padding:35px;border-radius:16px;width:90%;max-width:380px;text-align:center;box-shadow:0 20px 50px rgba(0,0,0,0.8)}
-      .login-card h2{color:#10b981;margin-bottom:8px;font-size:22px}
-      .login-card p{color:#a1a1aa;font-size:13px;margin-bottom:20px}
-      input[type="password"],input[type="text"]{width:100%;padding:11px 14px;background:#18181b;border:1px solid #3f3f46;border-radius:8px;color:#fff;font-size:14px;margin-bottom:10px;outline:none}
-      input:focus{border-color:#10b981}
+          <div class="now-playing">
+            <small id="st-fonte" style="color:#f59e0b;font-weight:bold">📁 Pasta Local</small>
+            <span id="st-musica">Carregando...</span>
+            <small id="st-buffer" style="color:#a1a1aa;margin-top:2px">🟢 Sinal Estável</small>
+          </div>
 
-      button{padding:9px 14px;border-radius:8px;border:none;font-weight:600;font-size:13px;cursor:pointer;transition:0.15s;display:inline-flex;align-items:center;gap:6px}
-      .btn-primary{background:#10b981;color:#000}.btn-primary:hover{background:#059669}
-      .btn-sec{background:#27272a;color:#e4e4e7}.btn-sec:hover{background:#3f3f46}
-      .btn-danger{background:#ef4444;color:#fff}.btn-danger:hover{background:#dc2626}
-      .btn-fav{background:#f59e0b;color:#000}
+          <div class="telemetry">
+            <div>👥 <b id="st-ouvintes">0</b></div>
+            <div>🧠 <b id="st-mem">-</b></div>
+            <div>⏱ <b id="st-up">-</b></div>
+            <button class="btn-sec" style="padding:5px 10px;font-size:11px" onclick="sair()">🔒 Sair</button>
+          </div>
+        </header>
 
-      #console-app{display:none;flex-direction:column;height:100vh}
-      header{background:#121215;border-bottom:1px solid #27272a;padding:12px 20px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px}
-      .brand{display:flex;align-items:center;gap:12px}
-      .on-air{padding:5px 12px;border-radius:6px;font-weight:800;font-size:12px;letter-spacing:1px;text-transform:uppercase}
-      .air-on{background:#10b981;color:#000;box-shadow:0 0 12px rgba(16,185,129,0.5)}
-      .air-off{background:#ef4444;color:#fff}
-      .air-live{background:#f43f5e;color:#fff;animation:pulse 1.2s infinite}
-      @keyframes pulse{0%{opacity:1}50%{opacity:0.5}100%{opacity:1}}
-
-      .now-playing{background:#18181b;border:1px solid #27272a;padding:8px 16px;border-radius:8px;flex:1;max-width:500px;min-width:240px}
-      .now-playing small{color:#a1a1aa;font-size:11px;display:block;text-transform:uppercase}
-      .now-playing span{color:#10b981;font-weight:600;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block}
-
-      .telemetry{display:flex;gap:15px;font-size:12px;color:#a1a1aa}
-      .telemetry b{color:#fff}
-
-      main{display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:16px;flex:1;overflow:hidden}
-      @media(max-width:850px){main{grid-template-columns:1fr;overflow:visible}}
-      .panel{background:#121215;border:1px solid #27272a;border-radius:12px;display:flex;flex-direction:column;overflow:hidden}
-      .tabs{display:flex;background:#18181b;border-bottom:1px solid #27272a;padding:6px;gap:6px;flex-wrap:wrap}
-      .tab-btn{background:transparent;color:#a1a1aa;padding:8px 12px;border-radius:6px;font-size:12px}
-      .tab-btn.active{background:#27272a;color:#10b981}
-      .tab-content{padding:16px;overflow-y:auto;flex:1;display:none}
-      .tab-content.active{display:block}
-
-      ul{list-style:none}
-      li{padding:9px 10px;border-bottom:1px solid #27272a;display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:13px}
-      li:hover{background:#18181b}
-      .mic-bar{background:linear-gradient(90deg,#1f1215,#121215);border-bottom:1px solid #3f1d24;padding:10px 20px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px}
-    </style></head><body>
-
-      <div id="login-screen">
-        <div class="login-card">
-          <h2>🎛️ ESTÚDIO WEB DJ</h2>
-          <p>Acesso restrito ao operador da rádio IMVU</p>
-          <input type="password" id="login-pass" placeholder="Digite sua senha de DJ" onkeydown="if(event.key==='Enter') fazerLogin()">
-          <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:#a1a1aa;margin-bottom:15px;cursor:pointer">
-            <input type="checkbox" id="manter-login"> Manter conectado neste navegador
-          </label>
-          <button class="btn-primary" style="width:100%;justify-content:center;padding:12px" onclick="fazerLogin()">🔓 Entrar no Estúdio</button>
+        <div class="mic-bar">
+          <div style="display:flex;align-items:center;gap:10px">
+            <strong>🎙️ Locução:</strong>
+            <span id="mic-status" style="font-size:12px;color:#a1a1aa">Microfone em espera</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:12px">
+            <label style="font-size:12px;color:#d4d4d8;cursor:pointer"><input type="checkbox" id="mic-fundo" checked> Fundo musical (25%)</label>
+            <button id="btn-mic-start" class="btn-danger" onclick="iniciarMic()">🎙️ Entrar Ao Vivo</button>
+            <button id="btn-mic-stop" class="btn-sec" style="display:none" onclick="pararMic()">⏹ Encerrar Voz</button>
+          </div>
         </div>
-      </div>
-      <div id="console-app">
+
+        <main style="display:grid;grid-template-columns:1.1fr 1fr 1fr;gap:12px;padding:12px;flex:1;overflow:hidden">
+          <!-- COLUNA 1: BUSCA, LINK E UPLOAD -->
+          <div class="panel">
+            <div class="tabs">
+              <button class="tab-btn active" onclick="abrirAba('col1','tab-busca',this)">🔎 Buscar</button>
+              <button class="tab-btn" onclick="abrirAba('col1','tab-link',this)">🌐 Link</button>
+              <button class="tab-btn" onclick="abrirAba('col1','tab-upload',this)">📤 Subir MP3</button>
+            </div>
+            <div id="tab-busca" class="tab-content active col1">
+              <div style="display:flex;gap:6px;margin-bottom:10px">
+                <input type="text" id="termo-busca" placeholder="Artista, música ou rádio..." style="margin:0" onkeydown="if(event.key==='Enter') buscarMusica()">
+                <button class="btn-primary" onclick="buscarMusica()">Buscar</button>
+                <button class="btn-sec" onclick="tocarAleatorio()">🎲</button>
+              </div>
+              <ul id="lista-busca"></ul>
+            </div>
+            <div id="tab-link" class="tab-content col1">
+              <input type="text" id="nome-link" placeholder="Nome da Rádio ou Música">
+              <input type="text" id="genero-link" placeholder="Gênero (Ex: Rock, Pagode, Mix)">
+              <input type="text" id="url" placeholder="Cole o link http://... ou https://...">
+              <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">
+                <button class="btn-primary" onclick="comando('link')">▶ Tocar</button>
+                <button class="btn-fav" onclick="adicionarFavorito('radio')">⭐ Rádio</button>
+                <button class="btn-fav" onclick="adicionarFavorito('mp3')">⭐ MP3</button>
+              </div>
+            </div>
+            <div id="tab-upload" class="tab-content col1">
+              <div id="aviso-token" style="background:#271a1a;border:1px solid #ef4444;padding:8px;border-radius:8px;font-size:12px;color:#fca5a5;margin-bottom:10px;display:none">⚠️ Configure <b>GITHUB_TOKEN</b> no Render.</div>
+              <input type="file" id="arquivo-mp3" accept=".mp3,audio/mpeg" style="margin-bottom:10px;color:#ccc">
+              <button class="btn-primary" id="btn-enviar-gh" onclick="enviarArquivoGitHub()">📤 Enviar MP3 p/ GitHub</button>
+            </div>
+          </div>
+
+          <!-- COLUNA 2: PLAYLIST PASTA GITHUB -->
+          <div class="panel">
+            <div class="tabs"><button class="tab-btn active" style="cursor:default">📁 Pasta GitHub (MP3s)</button></div>
+            <div class="tab-content active"><ul id="lista-pasta"></ul></div>
+          </div>
+
+          <!-- COLUNA 3: RÁDIOS POR GÊNERO + LINKS MP3 + DICAS -->
+          <div class="panel">
+            <div class="tabs">
+              <button class="tab-btn active" onclick="abrirAba('col3','tab-radios',this)">📻 Rádios</button>
+              <button class="tab-btn" onclick="abrirAba('col3','tab-mp3s',this)">🎵 MP3s</button>
+              <button class="tab-btn" onclick="abrirAba('col3','tab-dicas',this)">💡 Dicas</button>
+            </div>
+            <div id="tab-radios" class="tab-content active col3">
+              <select id="filtro-genero" onchange="carregarFavoritos()" style="width:100%;padding:8px;background:#18181b;color:#fff;border:1px solid #3f3f46;border-radius:6px;margin-bottom:10px">
+                <option value="TODOS">📂 Todos os Gêneros</option>
+              </select>
+              <ul id="lista-radios"></ul>
+            </div>
+            <div id="tab-mp3s" class="tab-content col3"><ul id="lista-mp3s"></ul></div>
+            <div id="tab-dicas" class="tab-content col3">
+              <ul style="font-size:12px;color:#d4d4d8;line-height:1.6">
+                <li style="display:block"><strong>1. Rádios 24h:</strong> Busque em <code>radio-browser.info</code> e copie a URL do stream.</li>
+                <li style="display:block"><strong>2. MP3 Grátis:</strong> Em <code>archive.org</code>, clique em <b>VBR MP3</b> -> botão direito -> <b>Copiar link</b>.</li>
+                <li style="display:block"><strong>3. Hospedagem Rápida:</strong> Suba um MP3 em <code>catbox.moe</code> para gerar link direto.</li>
+              </ul>
+            </div>
+          </div>
+        </main>
+
         <header>
           <div class="brand">
             <span id="st-badge" class="on-air air-on">ON AIR</span>
@@ -805,9 +903,13 @@ app.get('/dj', (req, res) => {
             else if (st.online) { b.innerText = 'ON AIR'; b.className = 'on-air air-on'; }
             else { b.innerText = 'OFF AIR'; b.className = 'on-air air-off'; }
 
-            document.getElementById('st-musica').innerText = st.musica;
+
+            modoNoServidor = st.modoAtual || 'pasta';
+            document.getElementById('btn-troca-modo').innerText = modoNoServidor === 'pasta' ? '📻 Modo Rádio' : '📁 Modo MP3';
+            document.getElementById('st-fonte').innerText = st.fonte || 'Rádio IMVU';
+            document.getElementById('st-musica').innerText = st.musica || '';
+            document.getElementById('st-buffer').innerText = st.buffer || '';           
             document.getElementById('st-ouvintes').innerText = st.ouvintes;
-            document.getElementById('st-vel').innerText = st.velocidade;
             document.getElementById('st-mem').innerText = st.memoria;
             document.getElementById('st-up').innerText = st.uptime;
             document.getElementById('aviso-token').style.display = st.githubAtivo ? 'none' : 'block';
@@ -816,6 +918,14 @@ app.get('/dj', (req, res) => {
               '<li><span>📁 '+arq+'</span><div style="display:flex;gap:4px"><button class="btn-primary" onclick="comando(\\'tocar\\','+i+')">▶</button><button class="btn-danger" onclick="apagarArquivoGitHub(\\''+arq+'\\')">🗑️</button></div></li>'
             ).join('') || '<li>Nenhuma música .mp3 na pasta.</li>';
           });
+        }
+        let modoNoServidor = 'pasta';
+        function alternarModo() {
+          if (modoNoServidor === 'pasta') comando('modo_radio');
+          else comando('modo_pasta');
+        }
+        function copiarLink(url) {
+          navigator.clipboard.writeText(url).then(() => alert('Link copiado!'));
         }
 
         verificarSessao();
@@ -842,14 +952,25 @@ app.post('/api/aleatorio', async (req, res) => {
 app.post('/api/comando', (req, res) => {
   const { senha, acao, indice, url, tituloCustom } = req.body;
   if (senha !== SENHA_DJ) return res.json({ ok: false, msg: 'Senha incorreta!' });
+
   if (acao === 'ligar') { if (!radioLigada) { radioLigada = true; tocarProxima(); } return res.json({ ok: true }); }
-  if (acao === 'desligar') { radioLigada = false; pararStreamAtual(); musicaTocando = 'TRANSMISSÃO PAUSADA (OFF AIR)'; return res.json({ ok: true }); }
-  if (acao === 'pular') { radioLigada = true; modoAtual = 'pasta'; indiceMusica++; tocarProxima(); return res.json({ ok: true }); }
-  if (acao === 'tocar') { radioLigada = true; modoAtual = 'pasta'; indiceMusica = indice; tocarProxima(); return res.json({ ok: true }); }
-  if (acao === 'link' && url) { radioLigada = true; modoAtual = 'link'; urlExterna = url.trim(); musicaTocando = tituloCustom ? `⭐ ${tituloCustom}` : `🌐 Link: ${urlExterna}`; tocarProxima(); return res.json({ ok: true }); }
-  if (acao === 'busca' && url) { radioLigada = true; modoAtual = 'busca'; urlExterna = url.trim(); musicaTocando = tituloCustom; tocarProxima(); return res.json({ ok: true }); }
+  if (acao === 'desligar') { radioLigada = false; pararStreamAtual(); nomeFonteAtual = 'Desligada'; musicaWinamp = 'TRANSMISSÃO PAUSADA'; return res.json({ ok: true }); }
+  if (acao === 'modo_pasta') { radioLigada = true; modoAtual = 'pasta'; iniciarComBuffer(tocarProxima); return res.json({ ok: true }); }
+  if (acao === 'modo_radio' && urlExterna) { radioLigada = true; modoAtual = 'radio'; tocarProxima(); return res.json({ ok: true }); }
+  if (acao === 'pular') { radioLigada = true; modoAtual = 'pasta'; indiceMusica++; iniciarComBuffer(tocarProxima); return res.json({ ok: true }); }
+  if (acao === 'tocar') { radioLigada = true; modoAtual = 'pasta'; indiceMusica = indice; iniciarComBuffer(tocarProxima); return res.json({ ok: true }); }
+  if ((acao === 'link' || acao === 'busca') && url) {
+    radioLigada = true;
+    modoAtual = 'radio';
+    urlExterna = url.trim();
+    nomeFonteAtual = tituloCustom || '🌐 Rádio Externa';
+    musicaWinamp = 'Conectando stream...';
+    tocarProxima();
+    return res.json({ ok: true });
+  }
   res.json({ ok: false, msg: 'Comando inválido.' });
 });
+
 
 setInterval(() => {
   if (Math.round(process.memoryUsage().rss / 1024 / 1024) > 420) process.exit(0);

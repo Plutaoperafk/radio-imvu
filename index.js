@@ -5,7 +5,7 @@ const fetch = require('node-fetch');
 const multer = require('multer');
 
 const app = express();
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 45 * 1024 * 1024 } });
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
 const PORT = process.env.PORT || 3000;
 
 // === SUAS CONFIGURAÇÕES ===
@@ -185,22 +185,52 @@ app.get('/stream', (req, res) => {
   req.on('close', () => { ouvintes = ouvintes.filter(o => o !== res); });
 });
 
-app.post('/api/mic-chunk', express.raw({ type: '*/*', limit: '5mb' }), (req, res) => {
-  const senha = req.headers['x-senha'];
-  if (senha !== SENHA_DJ) return res.status(401).end();
+app.post('/api/github-upload', upload.single('arquivo'), async (req, res) => {
+  if (req.body.senha !== SENHA_DJ) {
+    if (req.file) req.file.buffer = null;
+    return res.json({ ok: false, msg: 'Senha incorreta!' });
+  }
+  if (!GITHUB_TOKEN) {
+    if (req.file) req.file.buffer = null;
+    return res.json({ ok: false, msg: 'Configure a variável GITHUB_TOKEN no Render primeiro!' });
+  }
+  if (!req.file) return res.json({ ok: false, msg: 'Selecione um arquivo .mp3!' });
 
-  if (!modoAoVivo) {
-    modoAoVivo = true;
-    radioLigada = true;
-    pararStreamAtual();
-    musicaTocando = '🎙️ LOCUTOR AO VIVO NO MICROFONE!';
-    velocidadeAtual = 'Transmissão Mic Estúdio';
+  const nomeLimpo = req.file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
+  const apiUrl = `https://github.com{GITHUB_USER}/${GITHUB_REPO}/contents/musicas/${nomeLimpo}`;
+
+  try {
+    // 1. Grava direto no disco para tocar na hora sem pesar na RAM
+    fs.writeFileSync(path.join(pastaMusicas, nomeLimpo), req.file.buffer);
+
+    // 2. Converte e envia para o GitHub
+    let conteudoBase64 = req.file.buffer.toString('base64');
+    req.file.buffer = null; // Libera o buffer bruto imediatamente
+
+    const ghRes = await fetch(apiUrl, {
+      method: 'PUT',
+      headers: {
+        'Authorization': `token ${GITHUB_TOKEN}`,
+        'Content-Type': 'application/json',
+        'User-Agent': 'RadioIMVUConsole'
+      },
+      body: JSON.stringify({ message: `Upload DJ: ${nomeLimpo}`, content: conteudoBase64 })
+    });
+
+    conteudoBase64 = null; // Zera a string Base64 da RAM após o envio
+    if (global.gc) global.gc(); // Força limpeza se ativo
+
+    if (!ghRes.ok) {
+      const err = await ghRes.json();
+      return res.json({ ok: false, msg: 'Erro GitHub: ' + (err.message || 'Falha ao salvar') });
+    }
+    res.json({ ok: true, msg: 'Música salva e memória RAM liberada com sucesso!' });
+  } catch (e) {
+    if (req.file) req.file.buffer = null;
+    res.json({ ok: false, msg: 'Erro de conexão com GitHub.' });
   }
-  if (req.body && req.body.length > 0) {
-    enviarParaOuvintes(req.body);
-  }
-  res.json({ ok: true });
 });
+
 
 app.post('/api/mic-stop', (req, res) => {
   if (req.body.senha !== SENHA_DJ) return res.status(401).end();

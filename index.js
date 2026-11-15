@@ -88,14 +88,14 @@ function tocarProxima() {
   musicaTocando = `📁 ${arquivo}`;
   velocidadeAtual = '128 kbps (~16 KB/s)';
 
-  const readStream = fs.createReadStream(caminho, { highWaterMark: 16 * 1024 });
+  const readStream = fs.createReadStream(caminho, { highWaterMark: 24 * 1024 });
   streamAtivo = readStream;
 
   readStream.on('data', chunk => {
     if (!radioLigada || modoAoVivo) { readStream.pause(); return; }
     readStream.pause();
     enviarParaOuvintes(chunk);
-    setTimeout(() => { if (!readStream.destroyed && radioLigada && !modoAoVivo) readStream.resume(); }, 950);
+    setTimeout(() => { if (!readStream.destroyed && radioLigada && !modoAoVivo) readStream.resume(); }, 850);
   });
 
   readStream.on('end', () => { indiceMusica++; tocarProxima(); });

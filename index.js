@@ -246,6 +246,7 @@ app.post('/api/login', (req, res) => {
 
 app.get('/api/status', (req, res) => {
   const memMB = Math.round(process.memoryUsage().rss / 1024 / 1024);
+  if (memMB > 420) process.exit(0);
   const seg = Math.floor((Date.now() - inicioServidor) / 1000);
   const min = Math.floor(seg / 60);
   const hrs = Math.floor(min / 60);
@@ -753,5 +754,10 @@ app.post('/api/comando', (req, res) => {
   if (acao === 'busca' && url) { radioLigada = true; modoAtual = 'busca'; urlExterna = url.trim(); musicaTocando = tituloCustom; tocarProxima(); return res.json({ ok: true }); }
   res.json({ ok: false, msg: 'Comando inválido.' });
 });
+
+setInterval(() => {
+  if (Math.round(process.memoryUsage().rss / 1024 / 1024) > 420) process.exit(0);
+}, 30000);
+
 
 app.listen(PORT, () => { console.log('Console Web DJ rodando na porta ' + PORT); tocarProxima(); });

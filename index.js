@@ -127,9 +127,8 @@ async function buscarFontesOnline(termo) {
       const songs = saavnJson?.data?.results || [];
       songs.forEach(track => {
         const links = track.downloadUrl || [];
-        const audioUrl = links[links.length - 1]?.url || links[0]?.url;
-        const artista = track.artists?.primary?.[0]?.name || 'Artista';
-
+        const audioUrl = links[links.length - 1]?.url || links.at(0)?.url;
+        const artista = track.artists?.primary?.at(0)?.name || 'Artista';
         if (audioUrl) {
           resultados.push({
             tipo: 'mp3',
@@ -159,6 +158,7 @@ async function buscarFontesOnline(termo) {
   return resultados;
 }
 
+
 app.get('/', (req, res) => {
   res.send(`
     <html><head><title>Rádio IMVU</title><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -185,6 +185,54 @@ app.get('/stream', (req, res) => {
   req.on('close', () => { ouvintes = ouvintes.filter(o => o !== res); });
 });
 
+app.post('/api/mic-chunk', express.raw({ type: '*/*', limit: '5mb' }), (req, res) => {
+  const senha = req.headers['x-senha'];
+  if (senha !== SENHA_DJ) return res.status(401).end();
+
+  if (!modoAoVivo) {
+    modoAoVivo = true;
+    radioLigada = true;
+    pararStreamAtual();
+    musicaTocando = '🎙️ LOCUTOR AO VIVO NO MICROFONE!';
+    velocidadeAtual = 'Transmissão Mic Estúdio';
+  }
+  if (req.body && req.body.length > 0) {
+    enviarParaOuvintes(req.body);
+  }
+  res.json({ ok: true });
+});
+
+app.post('/api/mic-stop', (req, res) => {
+  if (req.body.senha !== SENHA_DJ) return res.status(401).end();
+  modoAoVivo = false;
+  tocarProxima();
+  res.json({ ok: true });
+});
+
+app.post('/api/login', (req, res) => {
+  if (req.body.senha === SENHA_DJ) return res.json({ ok: true });
+  res.json({ ok: false, msg: 'Senha de acesso incorreta!' });
+});
+
+app.get('/api/status', (req, res) => {
+  const memMB = Math.round(process.memoryUsage().rss / 1024 / 1024);
+  if (memMB > 420) process.exit(0);
+  const seg = Math.floor((Date.now() - inicioServidor) / 1000);
+  const min = Math.floor(seg / 60);
+  const hrs = Math.floor(min / 60);
+  res.json({
+    online: radioLigada,
+    aoVivo: modoAoVivo,
+    musica: musicaTocando,
+    ouvintes: ouvintes.length,
+    velocidade: velocidadeAtual,
+    memoria: memMB + ' MB / 512 MB',
+    uptime: hrs + 'h ' + (min % 60) + 'm ' + (seg % 60) + 's',
+    githubAtivo: !!GITHUB_TOKEN,
+    arquivosPasta: listarMusicas()
+  });
+});
+
 app.post('/api/github-upload', upload.single('arquivo'), async (req, res) => {
   if (req.body.senha !== SENHA_DJ) {
     if (req.file) req.file.buffer = null;
@@ -197,36 +245,82 @@ app.post('/api/github-upload', upload.single('arquivo'), async (req, res) => {
   if (!req.file) return res.json({ ok: false, msg: 'Selecione um arquivo .mp3!' });
 
   const nomeLimpo = req.file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
-  const apiUrl = `https://github.com{GITHUB_USER}/${GITHUB_REPO}/contents/musicas/${nomeLimpo}`;
+  const apiUrl = 'https://github.com' + GITHUB_USER + '/' + GITHUB_REPO + '/contents/musicas/' + nomeLimpo;
+  const headersGH = {
+    'Authorization': 'Bearer ' + GITHUB_TOKEN,
+    'Content-Type': 'application/json',
+    'User-Agent': 'RadioIMVUConsole'
+  };
 
   try {
-    fs.writeFileSync(path.join(pastaMusicas, nomeLimpo), req.file.buffer);
-    let conteudoBase64 = req.file.buffer.toString('base64');
-    req.file.buffer = null;
+    let shaExistente = undefined;
+    const checkRes = await fetch(apiUrl, { headers: headersGH });
+    if (checkRes.ok) {
+      const checkData = await checkRes.json();
+      shaExistente = checkData.sha;
+    }
 
+    let conteudoBase64 = req.file.buffer.toString('base64');
     const ghRes = await fetch(apiUrl, {
       method: 'PUT',
-      headers: {
-        'Authorization': `token ${GITHUB_TOKEN}`,
-        'Content-Type': 'application/json',
-        'User-Agent': 'RadioIMVUConsole'
-      },
-      body: JSON.stringify({ message: `Upload DJ: ${nomeLimpo}`, content: conteudoBase64 })
+      headers: headersGH,
+      body: JSON.stringify({
+        message: 'Upload DJ: ' + nomeLimpo,
+        content: conteudoBase64,
+        sha: shaExistente
+      })
     });
 
+    const ghData = await ghRes.json();
+    if (!ghRes.ok) {
+      req.file.buffer = null;
+      conteudoBase64 = null;
+      return res.json({ ok: false, msg: 'GitHub recusou: ' + (ghData.message || ghRes.status) });
+    }
+
+    fs.writeFileSync(path.join(pastaMusicas, nomeLimpo), req.file.buffer);
+    req.file.buffer = null;
     conteudoBase64 = null;
     if (global.gc) global.gc();
 
-    if (!ghRes.ok) {
-      const err = await ghRes.json();
-      return res.json({ ok: false, msg: 'Erro GitHub: ' + (err.message || 'Falha ao salvar') });
-    }
-    res.json({ ok: true, msg: 'Música salva e memória RAM liberada com sucesso!' });
+    res.json({ ok: true, msg: 'Música salva direto no GitHub e memória limpa!' });
   } catch (e) {
     if (req.file) req.file.buffer = null;
-    res.json({ ok: false, msg: 'Erro de conexão com GitHub.' });
+    res.json({ ok: false, msg: 'Erro de conexão: ' + e.message });
   }
 });
+
+app.post('/api/github-delete', async (req, res) => {
+  const { senha, nome } = req.body;
+  if (senha !== SENHA_DJ) return res.json({ ok: false, msg: 'Senha incorreta!' });
+  if (!GITHUB_TOKEN) return res.json({ ok: false, msg: 'Configure GITHUB_TOKEN no Render!' });
+
+  const apiUrl = 'https://github.com' + GITHUB_USER + '/' + GITHUB_REPO + '/contents/musicas/' + nome;
+  const headersGH = {
+    'Authorization': 'Bearer ' + GITHUB_TOKEN,
+    'Content-Type': 'application/json',
+    'User-Agent': 'RadioIMVUConsole'
+  };
+
+  try {
+    const localPath = path.join(pastaMusicas, nome);
+    if (fs.existsSync(localPath)) fs.unlinkSync(localPath);
+
+    const getRes = await fetch(apiUrl, { headers: headersGH });
+    if (getRes.ok) {
+      const fileData = await getRes.json();
+      await fetch(apiUrl, {
+        method: 'DELETE',
+        headers: headersGH,
+        body: JSON.stringify({ message: 'Delete DJ: ' + nome, sha: fileData.sha })
+      });
+    }
+    res.json({ ok: true, msg: 'Música removida da pasta e do GitHub!' });
+  } catch (e) {
+    res.json({ ok: false, msg: 'Erro ao apagar arquivo.' });
+  }
+});
+
 
 
 

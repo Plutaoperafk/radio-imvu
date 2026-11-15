@@ -104,8 +104,9 @@ function tocarProxima() {
 async function buscarFontesOnline(termo) {
   let resultados = [];
 
+  // 1. Radio Browser (Rádios temáticas 24h)
   try {
-    const urlRadio = 'https://radio-browser.info' + encodeURIComponent(termo) + '&limit=6&hidebroken=true';
+    const urlRadio = 'https://' + 'de1.api.' + 'radio-browser.info' + '/json/stations/search?name=' + encodeURIComponent(termo) + '&limit=6&hidebroken=true';
     const radioRes = await fetch(urlRadio, { headers: { 'User-Agent': 'RadioIMVUConsole/2.0' } });
     if (radioRes.ok) {
       const stations = await radioRes.json();
@@ -119,8 +120,9 @@ async function buscarFontesOnline(termo) {
     }
   } catch (e) {}
 
+  // 2. JioSaavn API (Músicas completas MP3)
   try {
-    const urlSaavn = 'https://saavn.dev' + encodeURIComponent(termo) + '&limit=6';
+    const urlSaavn = 'https://' + 'saavn.dev' + '/api/search/songs?query=' + encodeURIComponent(termo) + '&limit=6';
     const saavnRes = await fetch(urlSaavn, { headers: { 'User-Agent': 'Mozilla/5.0' } });
     if (saavnRes.ok) {
       const saavnJson = await saavnRes.json();
@@ -140,8 +142,9 @@ async function buscarFontesOnline(termo) {
     }
   } catch (e) {}
 
+  // 3. API Pública do Deezer
   try {
-    const urlDeezer = 'https://deezer.com' + encodeURIComponent(termo) + '&limit=6';
+    const urlDeezer = 'https://' + 'api.' + 'deezer.com' + '/search?q=' + encodeURIComponent(termo) + '&limit=6';
     const deezerRes = await fetch(urlDeezer);
     if (deezerRes.ok) {
       const deezerJson = await deezerRes.json();
@@ -157,6 +160,7 @@ async function buscarFontesOnline(termo) {
 
   return resultados;
 }
+
 
 
 app.get('/', (req, res) => {

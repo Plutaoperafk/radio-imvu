@@ -200,12 +200,9 @@ app.post('/api/github-upload', upload.single('arquivo'), async (req, res) => {
   const apiUrl = `https://github.com{GITHUB_USER}/${GITHUB_REPO}/contents/musicas/${nomeLimpo}`;
 
   try {
-    // 1. Grava direto no disco para tocar na hora sem pesar na RAM
     fs.writeFileSync(path.join(pastaMusicas, nomeLimpo), req.file.buffer);
-
-    // 2. Converte e envia para o GitHub
     let conteudoBase64 = req.file.buffer.toString('base64');
-    req.file.buffer = null; // Libera o buffer bruto imediatamente
+    req.file.buffer = null;
 
     const ghRes = await fetch(apiUrl, {
       method: 'PUT',
@@ -217,8 +214,8 @@ app.post('/api/github-upload', upload.single('arquivo'), async (req, res) => {
       body: JSON.stringify({ message: `Upload DJ: ${nomeLimpo}`, content: conteudoBase64 })
     });
 
-    conteudoBase64 = null; // Zera a string Base64 da RAM após o envio
-    if (global.gc) global.gc(); // Força limpeza se ativo
+    conteudoBase64 = null;
+    if (global.gc) global.gc();
 
     if (!ghRes.ok) {
       const err = await ghRes.json();
@@ -230,6 +227,7 @@ app.post('/api/github-upload', upload.single('arquivo'), async (req, res) => {
     res.json({ ok: false, msg: 'Erro de conexão com GitHub.' });
   }
 });
+
 
 
 app.post('/api/mic-stop', (req, res) => {
